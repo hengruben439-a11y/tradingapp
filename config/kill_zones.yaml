@@ -1,0 +1,53 @@
+# Kill Zone UTC Windows (Authoritative — §6.6 of PRD)
+# All times in UTC (non-DST). During EDT (Mar-Nov UTC-4): add 1h to EST conversions.
+# Engine always works in UTC; conversion to SGT/EST is display-only.
+
+kill_zones:
+  asian:
+    utc_start: "00:00"
+    utc_end:   "02:00"
+    pairs: [XAUUSD, GBPJPY]
+    score: 0.30
+    direction: trend   # score applied in HTF trend direction
+    character: "Range-bound, lower volatility, bias continuation"
+
+  shanghai_open:
+    utc_start: "00:15"
+    utc_end:   "02:15"
+    pairs: [XAUUSD]    # XAUUSD only
+    score: 0.60
+    direction: trend
+    character: "PBOC fixing, SGE physical demand — takes precedence over Asian for XAUUSD 00:15-02:00"
+    note: "Overlaps Asian KZ for XAUUSD. Shanghai Open score supersedes Asian score during 00:15-02:00 UTC."
+
+  london:
+    utc_start: "07:00"
+    utc_end:   "10:00"
+    pairs: [XAUUSD, GBPJPY]
+    score: 0.80
+    direction: trend
+    character: "Institutional volume, trend initiation"
+
+  new_york:
+    utc_start: "13:00"
+    utc_end:   "16:00"
+    pairs: [XAUUSD, GBPJPY]
+    score: 1.00
+    direction: trend
+    character: "Highest volatility, US data releases, confirmation of London moves"
+
+  london_close:
+    utc_start: "15:00"
+    utc_end:   "17:00"
+    pairs: [XAUUSD, GBPJPY]
+    score: 0.50
+    direction: counter_trend  # counter-trend retracement trades
+    character: "Retracement, profit-taking, closing positions"
+
+# Multipliers (applied to final confluence score, not module score)
+multipliers:
+  active: 1.05
+  outside_all: 0.95
+
+# Initial state: no trend established yet
+no_trend_score: 0.0

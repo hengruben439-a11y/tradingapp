@@ -1,0 +1,26 @@
+# Day-of-Week Confluence Multipliers
+# Default: 1.0x for all days until walk-forward backtest provides pair-specific data.
+# Recalibrate quarterly using rolling 6-month backtest window.
+# Store updated values here after each quarterly calibration with date noted.
+# Applied as a multiplier on the pre-clamp confluence score (Step 3 of aggregator).
+
+# Last calibrated: N/A (pre-backtest defaults)
+last_calibrated: null
+
+XAUUSD:
+  monday:    1.00
+  tuesday:   1.00
+  wednesday: 1.00
+  thursday:  1.00
+  friday:    1.00  # Update if Friday scalping <50% win rate → apply 0.90x
+
+GBPJPY:
+  monday:    1.00
+  tuesday:   1.00
+  wednesday: 1.00
+  thursday:  1.00
+  friday:    1.00  # Update if Friday performance differs materially
+
+# Notes from backtest (fill in after Sprint 6):
+# Example: XAUUSD friday scalping: win_rate=0.48 → update to 0.90
+notes: []

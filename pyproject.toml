@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "made-trading-engine"
+version = "0.1.0"
+description = "made. — Intelligent Trading Signal Engine (XAUUSD · GBPJPY)"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "numba>=0.59.0",
+    "ta-lib>=0.4.28",
+    "vectorbt>=0.26.1",
+    "pyarrow>=14.0.0",      # Parquet I/O
+    "fastparquet>=2023.10.1",
+    "scipy>=1.11.0",
+    "plotly>=5.18.0",
+    "optuna>=3.4.0",        # Bayesian weight optimization
+    "pydantic>=2.5.0",      # Signal dataclass validation
+    "python-dotenv>=1.0.0",
+    "pytz>=2023.3",
+    "requests>=2.31.0",
+    "aiohttp>=3.9.0",       # Async data feed
+    "websockets>=12.0",
+    "redis>=5.0.0",         # State checkpointing
+    "pyyaml>=6.0.1",
+    "rich>=13.7.0",         # Console reporting
+    "loguru>=0.7.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.92.0",   # Property-based testing for signal logic
+    "black>=23.12.0",
+    "ruff>=0.1.9",
+    "mypy>=1.8.0",
+    "ipykernel>=6.28.0",
+    "jupyter>=1.0.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.scripts]
+made-backtest = "backtest.harness:main"
+made-engine = "engine.aggregator:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engine*", "data*", "backtest*", "config*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"

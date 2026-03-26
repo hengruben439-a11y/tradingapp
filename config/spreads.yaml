@@ -1,0 +1,32 @@
+# Dynamic Spread Model for Backtesting
+# Replaces flat spread to model realistic trading costs.
+# All values in pips. Used in backtest/harness.py for next-bar-open execution cost.
+
+XAUUSD:
+  london_ny_hours:        2    # UTC 07:00-16:00 (London + NY overlap)
+  asian_session:          4    # UTC 23:00-07:00
+  news_first_5min:        15   # First 5 min of NFP, FOMC, CPI
+  low_liquidity:          6    # Holidays, rollovers, thin markets
+  default:                3    # Fallback if session cannot be determined
+
+GBPJPY:
+  london_ny_hours:        3
+  asian_session:          4
+  news_first_5min:        10
+  low_liquidity:          5
+  default:                4
+
+# High-impact news events that trigger news_first_5min spread
+news_spike_events:
+  - "NFP"
+  - "FOMC"
+  - "CPI"
+  - "BOE Rate Decision"
+  - "BOJ Rate Decision"
+  - "GDP"
+
+# Additional execution assumptions (applied on top of spread)
+execution:
+  latency_ms: 50
+  slippage_pips: 1
+  commission_per_lot: 0   # $0 commission (spread-only model)

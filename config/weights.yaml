@@ -1,0 +1,53 @@
+# Module Weights for Confluence Score Aggregator
+# Weights must sum to 1.0 per pair
+# Order: market_structure, ob_fvg, ote, ema, rsi, macd, bollinger, kill_zone, support_resistance
+
+XAUUSD:
+  market_structure:    0.25
+  ob_fvg:              0.20
+  ote:                 0.15
+  ema:                 0.10
+  rsi:                 0.08
+  macd:                0.07
+  bollinger:           0.05
+  kill_zone:           0.05
+  support_resistance:  0.05
+  # Sum: 1.00
+
+GBPJPY:
+  market_structure:    0.25
+  ob_fvg:              0.18
+  ote:                 0.15
+  ema:                 0.12
+  rsi:                 0.08
+  macd:                0.07
+  bollinger:           0.05
+  kill_zone:           0.05
+  support_resistance:  0.05
+  # Sum: 1.00
+
+# Confluence multipliers (multiplicative, not additive)
+multipliers:
+  unicorn_ob_fvg_overlap: 1.10   # OB + FVG at same zone (ICT Unicorn)
+  ote_plus_ob:            1.08   # OTE zone aligns with OB
+  ote_plus_fvg:           1.06   # OTE zone aligns with FVG
+  kill_zone_active:       1.05   # Price during active Kill Zone
+  kill_zone_outside:      0.95   # Price outside all Kill Zones
+
+# Base score cap (applied before weighting; modules may output up to 1.0 raw)
+base_score_cap: 0.85
+
+# Penalties (applied as multipliers to final score)
+penalties:
+  htf_conflict:           0.80   # LTF signal conflicts with HTF bias
+  news_proximity:         0.90   # High-impact news within 15 min
+  regime_transitional:    0.90   # Market in TRANSITIONAL regime
+  excessive_sl:           0.80   # SL > 3x ATR from entry
+
+# Optimization constraints for Optuna
+optimization:
+  min_weight: 0.03
+  max_weight: 0.30
+  optuna_trials: 1500
+  in_sample_ratio: 0.80
+  overfitting_flag_threshold: 0.15  # OOS drops >15% vs IS = overfitting

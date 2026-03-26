@@ -1,0 +1,146 @@
+# Indicator Parameters Per Timeframe
+# All ATR-based thresholds for XAUUSD are percentage-based (not fixed dollar values)
+
+timeframes:
+  - "1m"
+  - "5m"
+  - "15m"
+  - "30m"
+  - "1H"
+  - "4H"
+  - "1D"
+  - "1W"
+
+rsi:
+  period: 14
+  thresholds:
+    "1m":  { overbought: 65, oversold: 35 }
+    "5m":  { overbought: 65, oversold: 35 }
+    "15m": { overbought: 70, oversold: 30 }
+    "30m": { overbought: 70, oversold: 30 }
+    "1H":  { overbought: 70, oversold: 30 }
+    "4H":  { overbought: 70, oversold: 30 }
+    "1D":  { overbought: 75, oversold: 25 }
+    "1W":  { overbought: 80, oversold: 20 }
+  divergence_lookback:
+    "1m":  5
+    "5m":  5
+    "15m": 8
+    "30m": 8
+    "1H":  10
+    "4H":  10
+    "1D":  15
+    "1W":  20
+
+macd:
+  fast_period: 12
+  slow_period: 26
+  signal_period: 9
+
+bollinger_bands:
+  period: 20
+  std_dev: 2
+  squeeze_lookback: 20  # periods to check for BB width minimum
+
+ema:
+  periods: [20, 50, 100, 200]
+  golden_death_cross_bias_bars: 20  # bars to apply +/-0.3 bias after cross
+
+atr:
+  period: 14
+  period_short: 10  # used for 1m/5m scalping timeframes
+  displacement_threshold: 2.0  # candle range >= N * ATR = displacement
+
+swing_points:
+  lookback:
+    "1m":  3
+    "5m":  3
+    "15m": 5
+    "30m": 5
+    "1H":  5
+    "4H":  5
+    "1D":  7
+    "1W":  10
+
+order_blocks:
+  max_active: 5
+  mitigation_threshold: 0.50  # >50% of OB zone filled = mitigated
+  min_candles:
+    "1m":  1
+    "5m":  1
+    "15m": 2
+    "30m": 2
+    "1H":  3
+    "4H":  3
+    "1D":  5
+    "1W":  10
+
+fvg:
+  min_size_atr_multiple:
+    "1m":  0.50
+    "5m":  0.50
+    "15m": 0.75
+    "30m": 0.75
+    "1H":  1.00
+    "4H":  1.00
+    "1D":  1.50
+    "1W":  2.00
+
+ote_fibonacci:
+  levels: [0.0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1.0]
+  zone_low: 0.618
+  zone_high: 0.786
+  sweet_spot: 0.705
+  extensions: [-0.27, -0.618, -1.0]  # TP projection levels
+
+signal_expiry_bars:
+  "1m":  5
+  "5m":  5
+  "15m": 8
+  "30m": 8
+  "1H":  12
+  "4H":  12
+  "1D":  5
+  "1W":  3
+
+# Confidence decay: displayed_score = base_score * (1 - 0.25 * elapsed_fraction)
+confidence_decay:
+  rate: 0.25
+  fading_threshold: 0.50
+  expire_threshold: 0.30
+
+market_structure:
+  ranging_atr_band_multiplier: 1.5  # swing points within N*ATR = ranging
+  choch_displacement_atr_min: 1.5   # CHoCH candle must be >= N*ATR
+
+regime:
+  adx_period: 14
+  trending_threshold: 25
+  ranging_threshold: 20
+  bb_width_lookback: 50  # periods for BB width MA comparison
+
+support_resistance:
+  cluster_atr_multiple: 0.5   # swing points within N*ATR = cluster/S&R
+  equal_highs_tolerance:
+    GBPJPY: 5    # pips
+    XAUUSD: 0.03  # % of price (percentage-based for ATR normalization)
+
+stop_loss:
+  atr_min_multiple: 1.0
+  atr_max_multiple: 3.0
+  preferred_multiple: 1.5
+  buffer_pips_gbpjpy: [5, 10]     # [min, max] pip buffer
+  buffer_pct_xauusd: [0.03, 0.07] # [min, max] % of price buffer
+  excessive_sl_penalty: 0.20       # reduce signal strength by this fraction
+
+take_profit:
+  tp1_rr: 1.0
+  tp2_rr: 2.0
+  tp3_rr: 3.0
+  tp1_close_pct: 0.40
+  tp2_close_pct: 0.30
+  tp3_close_pct: 0.30
+  atr_fallback:
+    tp1: 1.5
+    tp2: 2.5
+    tp3: 4.0
