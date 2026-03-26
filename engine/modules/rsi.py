@@ -96,15 +96,14 @@ class RSIModule:
 
         Args:
             candles: OHLCV DataFrame sorted ascending. Min length: period + lookback.
-
-        Sprint 4 implementation notes:
-        - RSI = 100 - (100 / (1 + RS))
-        - RS = avg_gain / avg_loss over period using Wilder's smoothing
-        - Use pandas: gain = diff().clip(lower=0), loss = diff().clip(upper=0).abs()
-        - Rolling avg: .ewm(com=period-1, adjust=False).mean()
-        - Scan for divergence using self.lookback bars
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if len(candles) < self.period + 1:
+            return
+
+        closes = candles["close"]
+        self._rsi = self._calculate_rsi(closes)
+        self._latest_rsi = float(self._rsi.iloc[-1])
+        self._detect_divergence(candles, self._rsi)
 
     def score(self) -> float:
         """
@@ -112,7 +111,40 @@ class RSIModule:
 
         Divergence scores take precedence over raw OB/OS readings.
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if self._rsi is None:
+            return 0.0
+
+        # Divergence takes precedence
+        div = self.latest_divergence()
+        if div is not None:
+            if div.kind == DivergenceKind.BULLISH_REGULAR:
+                return 0.8
+            elif div.kind == DivergenceKind.BEARISH_REGULAR:
+                return -0.8
+            elif div.kind == DivergenceKind.BULLISH_HIDDEN:
+                return 0.5
+            elif div.kind == DivergenceKind.BEARISH_HIDDEN:
+                return -0.5
+
+        rsi = self._latest_rsi
+
+        # Overbought / oversold
+        if rsi < self.oversold:
+            return self._scale_extreme_score(rsi)
+        if rsi > self.overbought:
+            return self._scale_extreme_score(rsi)
+
+        # Neutral zone
+        if 40.0 <= rsi <= 60.0:
+            return 0.0
+
+        # Between threshold and neutral — mild bias
+        if rsi < 40.0:
+            return 0.2   # mild bullish lean
+        if rsi > 60.0:
+            return -0.2  # mild bearish lean
+
+        return 0.0
 
     @property
     def latest_rsi(self) -> float:
@@ -133,31 +165,155 @@ class RSIModule:
         """
         Wilder's smoothed RSI calculation.
         Returns RSI series aligned to closes index.
-
-        Sprint 4 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        delta = closes.diff()
+        gain = delta.clip(lower=0)
+        loss = delta.clip(upper=0).abs()
+
+        # Wilder's smoothing: com = period - 1
+        avg_gain = gain.ewm(com=self.period - 1, adjust=False).mean()
+        avg_loss = loss.ewm(com=self.period - 1, adjust=False).mean()
+
+        # Handle division edge cases:
+        # - avg_loss = 0 AND avg_gain > 0 → RS = ∞ → RSI = 100
+        # - avg_loss = 0 AND avg_gain = 0 → no movement → RSI = 50
+        # - normal case: RSI = 100 - 100/(1+RS)
+        rsi = pd.Series(50.0, index=closes.index, dtype=float)
+        both_zero = (avg_gain <= 0) & (avg_loss <= 0)
+        only_gain = (avg_gain > 0) & (avg_loss <= 0)
+        normal = ~both_zero & ~only_gain
+
+        if normal.any():
+            rs_normal = avg_gain[normal] / avg_loss[normal]
+            rsi[normal] = 100.0 - (100.0 / (1.0 + rs_normal))
+
+        rsi[only_gain] = 100.0
+        # both_zero stays at 50.0 (initial fill)
+
+        return rsi.fillna(50.0)
 
     def _detect_divergence(self, candles: pd.DataFrame, rsi: pd.Series) -> None:
         """
         Scan recent bars for regular and hidden RSI divergence.
 
-        Sprint 4 implementation notes:
-        - Find local price highs/lows over self.lookback window
-        - Compare price extremes vs RSI extremes at same pivots
-        - Regular bullish: price makes lower low, RSI makes higher low
-        - Hidden bullish: price makes higher low, RSI makes lower low
-        - Only flag divergences where the pivot separation is >= 3 bars
+        Uses the last `lookback` bars. Finds the two most recent local
+        highs (for bearish divergence) or lows (for bullish divergence)
+        and compares price vs RSI direction.
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if len(candles) < 6:
+            return
+
+        closes = candles["close"]
+        # Use a wider scan window (lookback * 6, min 60 bars) to find pivot pairs.
+        # self.lookback represents the minimum bar separation between pivots, not window size.
+        window = min(len(candles), max(self.lookback * 6, 60))
+        recent_closes = closes.iloc[-window:]
+        recent_rsi = rsi.iloc[-window:]
+
+        if len(recent_closes) < 4:
+            return
+
+        # Find local lows (for bullish divergence).
+        # Use strict < on left (must be lower than previous bar) and <= on right
+        # (allows flat-bottom pivots where next bar equals the low).
+        lows_idx = []
+        for i in range(1, len(recent_closes) - 1):
+            if (recent_closes.iloc[i] < recent_closes.iloc[i - 1]
+                    and recent_closes.iloc[i] <= recent_closes.iloc[i + 1]):
+                lows_idx.append(i)
+        # Also treat the last bar as a potential pivot (current bar in live context).
+        last = len(recent_closes) - 1
+        if last >= 1 and recent_closes.iloc[last] < recent_closes.iloc[last - 1]:
+            lows_idx.append(last)
+
+        # Find local highs (for bearish divergence).
+        highs_idx = []
+        for i in range(1, len(recent_closes) - 1):
+            if (recent_closes.iloc[i] > recent_closes.iloc[i - 1]
+                    and recent_closes.iloc[i] >= recent_closes.iloc[i + 1]):
+                highs_idx.append(i)
+        # Also treat the last bar as a potential pivot.
+        if last >= 1 and recent_closes.iloc[last] > recent_closes.iloc[last - 1]:
+            highs_idx.append(last)
+
+        # Need at least 2 pivots with >= 3 bar separation
+        if len(lows_idx) >= 2:
+            i1, i2 = lows_idx[-2], lows_idx[-1]
+            if i2 - i1 >= 3:
+                p1 = float(recent_closes.iloc[i1])
+                p2 = float(recent_closes.iloc[i2])
+                r1 = float(recent_rsi.iloc[i1])
+                r2 = float(recent_rsi.iloc[i2])
+
+                ts = candles.index[-1]
+                if isinstance(ts, pd.Timestamp):
+                    ts = ts.to_pydatetime()
+
+                if p2 < p1 and r2 > r1:
+                    # Regular bullish: price LL, RSI HL
+                    self._divergences.append(DivergenceRecord(
+                        kind=DivergenceKind.BULLISH_REGULAR,
+                        timestamp=ts,
+                        price_level=p2,
+                        rsi_level=r2,
+                    ))
+                elif p2 > p1 and r2 < r1:
+                    # Hidden bullish: price HL, RSI LL
+                    self._divergences.append(DivergenceRecord(
+                        kind=DivergenceKind.BULLISH_HIDDEN,
+                        timestamp=ts,
+                        price_level=p2,
+                        rsi_level=r2,
+                    ))
+
+        if len(highs_idx) >= 2:
+            i1, i2 = highs_idx[-2], highs_idx[-1]
+            if i2 - i1 >= 3:
+                p1 = float(recent_closes.iloc[i1])
+                p2 = float(recent_closes.iloc[i2])
+                r1 = float(recent_rsi.iloc[i1])
+                r2 = float(recent_rsi.iloc[i2])
+
+                ts = candles.index[-1]
+                if isinstance(ts, pd.Timestamp):
+                    ts = ts.to_pydatetime()
+
+                if p2 > p1 and r2 < r1:
+                    # Regular bearish: price HH, RSI LH
+                    self._divergences.append(DivergenceRecord(
+                        kind=DivergenceKind.BEARISH_REGULAR,
+                        timestamp=ts,
+                        price_level=p2,
+                        rsi_level=r2,
+                    ))
+                elif p2 < p1 and r2 > r1:
+                    # Hidden bearish: price LH, RSI HH
+                    self._divergences.append(DivergenceRecord(
+                        kind=DivergenceKind.BEARISH_HIDDEN,
+                        timestamp=ts,
+                        price_level=p2,
+                        rsi_level=r2,
+                    ))
 
     def _scale_extreme_score(self, rsi_value: float) -> float:
         """
         Scale oversold/overbought intensity to a 0.6–1.0 score.
         More extreme RSI = higher score magnitude.
 
-        Sprint 4 implementation:
-        - Oversold: 0.6 at threshold, 1.0 at 10 (absolute extreme)
-        - Overbought: -0.6 at threshold, -1.0 at 90
+        Oversold: 0.6 at threshold, 1.0 at 10 (absolute extreme)
+        Overbought: -0.6 at threshold, -1.0 at 90
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if rsi_value <= self.oversold:
+            # Map [oversold..10] → [0.6..1.0]
+            extreme_low = 10.0
+            if rsi_value <= extreme_low:
+                return 1.0
+            fraction = (self.oversold - rsi_value) / (self.oversold - extreme_low)
+            return 0.6 + 0.4 * fraction
+        else:
+            # Map [overbought..90] → [-0.6..-1.0]
+            extreme_high = 90.0
+            if rsi_value >= extreme_high:
+                return -1.0
+            fraction = (rsi_value - self.overbought) / (extreme_high - self.overbought)
+            return -(0.6 + 0.4 * fraction)

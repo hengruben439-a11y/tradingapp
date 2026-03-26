@@ -22,13 +22,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from typing import Callable, Optional
 
 import pandas as pd
 
-from backtest.executor import TradeRecord, execute_next_bar_open, update_trade
+from backtest.executor import TradeRecord, TradeStatus, execute_next_bar_open, update_trade
 from backtest.metrics import BacktestMetrics, compute_metrics
-from data.resampler import get_higher_timeframes, resample
+from data.resampler import resample_all
 
 
 @dataclass
@@ -104,7 +105,81 @@ class BacktestHarness:
         - Apply max_simultaneous_signals limit per pair
         - Accumulate trades; compute metrics at the end
         """
-        raise NotImplementedError("Implement in Sprint 6")
+        from engine.signal_generator import STYLE_TIMEFRAMES
+        entry_tf = STYLE_TIMEFRAMES.get(self.config.trading_style, ("15m", []))[0]
+
+        # ── Resample once ────────────────────────────────────────────────────
+        all_candles = resample_all(candles_1m)
+        entry_candles = all_candles.get(entry_tf, candles_1m)
+
+        if len(entry_candles) < 2:
+            return BacktestResult(
+                config=self.config,
+                trades=[],
+                metrics=compute_metrics([], self.config.initial_capital),
+                equity_curve=[self.config.initial_capital],
+                start_date=None,
+                end_date=None,
+                total_bars_processed=0,
+            )
+
+        start_date = entry_candles.index[0].to_pydatetime() if hasattr(entry_candles.index[0], "to_pydatetime") else entry_candles.index[0]
+        end_date = entry_candles.index[-1].to_pydatetime() if hasattr(entry_candles.index[-1], "to_pydatetime") else entry_candles.index[-1]
+
+        # ── Bar-by-bar iteration ─────────────────────────────────────────────
+        equity = self.config.initial_capital
+        equity_curve: list[float] = [equity]
+        self._open_trades = []
+        self._closed_trades = []
+
+        for bar_idx in range(1, len(entry_candles)):
+            bar = entry_candles.iloc[bar_idx]
+            bar_time = entry_candles.index[bar_idx]
+            if hasattr(bar_time, "to_pydatetime"):
+                bar_time = bar_time.to_pydatetime()
+
+            # Slice all candles up to current bar (no look-ahead)
+            candles_dict = {
+                tf: df.iloc[: df.index.searchsorted(entry_candles.index[bar_idx], side="right")]
+                for tf, df in all_candles.items()
+            }
+
+            is_news = self._is_news_bar(bar_time, news_events)
+
+            # Fill any pending trades from previous bar
+            self._process_pending_fills(bar, is_news)
+
+            # Update all open trades for TP/SL hits
+            self._update_open_trades(bar)
+
+            # Generate new signals via signal_generator callable
+            if not is_news:
+                new_trades = signal_generator(candles_dict, bar_idx)
+                new_trades = self._apply_signal_limit(new_trades)
+                self._open_trades.extend(new_trades)
+
+            # Track equity (approximate: initial_capital + closed P&L sum)
+            closed_pnl = sum(t.pnl_pips for t in self._closed_trades)
+            equity_curve.append(self.config.initial_capital + closed_pnl)
+
+        # Close any remaining open trades at end (mark as expired)
+        for trade in self._open_trades:
+            trade.status = TradeStatus.EXPIRED
+            self._closed_trades.append(trade)
+        self._open_trades = []
+
+        all_trades = self._closed_trades[:]
+        metrics = compute_metrics(all_trades, self.config.initial_capital)
+
+        return BacktestResult(
+            config=self.config,
+            trades=all_trades,
+            metrics=metrics,
+            equity_curve=equity_curve,
+            start_date=start_date,
+            end_date=end_date,
+            total_bars_processed=len(entry_candles) - 1,
+        )
 
     def run_walk_forward(
         self,
@@ -127,7 +202,80 @@ class BacktestHarness:
 
         Sprint 6 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 6")
+        from engine.signal_generator import STYLE_TIMEFRAMES
+
+        # Determine window sizes based on trading style
+        swing_style = self.config.trading_style in ("swing_trading", "position_trading")
+        if swing_style:
+            total_months = self.config.in_sample_months + self.config.out_sample_months  # default 12
+            step_months = self.config.out_sample_months   # default 4
+        else:
+            total_months = self.config.in_sample_months + self.config.out_sample_months  # default 6
+            step_months = self.config.out_sample_months   # default 2
+
+        entry_tf = STYLE_TIMEFRAMES.get(self.config.trading_style, ("15m", []))[0]
+        all_candles = resample_all(candles_1m)
+        entry_candles = all_candles.get(entry_tf, candles_1m)
+
+        if len(entry_candles) < 2:
+            return []
+
+        start_ts = entry_candles.index[0]
+        end_ts = entry_candles.index[-1]
+        if hasattr(start_ts, "to_pydatetime"):
+            start_dt = start_ts.to_pydatetime()
+            end_dt = end_ts.to_pydatetime()
+        else:
+            start_dt = start_ts
+            end_dt = end_ts
+
+        oos_results: list[BacktestResult] = []
+        window_start = start_dt
+
+        while True:
+            is_end = window_start + relativedelta(months=self.config.in_sample_months)
+            oos_end = is_end + relativedelta(months=self.config.out_sample_months)
+
+            if oos_end > end_dt:
+                break
+
+            # Slice 1m candles for this OOS window
+            # Convert to tz-aware Timestamps safely
+            def _to_ts(dt):
+                ts = pd.Timestamp(dt)
+                if ts.tzinfo is None:
+                    return ts.tz_localize("UTC")
+                return ts.tz_convert("UTC")
+
+            warmup_start = window_start
+            warmup_mask = (candles_1m.index >= _to_ts(warmup_start)) & \
+                          (candles_1m.index < _to_ts(oos_end))
+
+            window_1m = candles_1m.loc[warmup_mask]
+            if len(window_1m) < 500:
+                window_start += relativedelta(months=step_months)
+                continue
+
+            oos_config = BacktestConfig(
+                pair=self.config.pair,
+                trading_style=self.config.trading_style,
+                entry_timeframe=self.config.entry_timeframe,
+                initial_capital=self.config.initial_capital,
+                risk_pct=self.config.risk_pct,
+                slippage_pips=self.config.slippage_pips,
+                max_simultaneous_signals=self.config.max_simultaneous_signals,
+                is_walk_forward=True,
+                in_sample_months=self.config.in_sample_months,
+                out_sample_months=self.config.out_sample_months,
+            )
+            oos_harness = BacktestHarness(oos_config)
+            result = oos_harness.run(window_1m, signal_generator, news_events)
+            result.is_out_of_sample = True
+            oos_results.append(result)
+
+            window_start += relativedelta(months=step_months)
+
+        return oos_results
 
     def _is_news_bar(
         self,

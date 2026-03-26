@@ -177,45 +177,38 @@ class TestWeightedSum:
 # ─── Full Aggregation Tests (Sprint 5) ───────────────────────────────────────
 
 class TestFullAggregation:
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_all_bullish_gives_positive_score(self, agg_xau):
         inputs = _all_bullish_inputs()
         result = agg_xau.aggregate(inputs)
         assert result.confluence_score > 0.0
         assert result.direction == Direction.BUY
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_all_bearish_gives_negative_score(self, agg_xau):
         inputs = _all_bearish_inputs()
         result = agg_xau.aggregate(inputs)
         assert result.confluence_score < 0.0
         assert result.direction == Direction.SELL
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_all_neutral_no_signal(self, agg_xau):
         inputs = _neutral_inputs()
         result = agg_xau.aggregate(inputs)
         assert not result.passes_threshold
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_htf_conflict_reduces_score(self, agg_xau):
         without_conflict = agg_xau.aggregate(_all_bullish_inputs())
         with_conflict = agg_xau.aggregate(_all_bullish_inputs(htf_conflict=True))
         assert abs(with_conflict.confluence_score) < abs(without_conflict.confluence_score)
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_unicorn_multiplier_increases_score(self, agg_xau):
         base = agg_xau.aggregate(_all_bullish_inputs())
         unicorn = agg_xau.aggregate(_all_bullish_inputs(unicorn_setup=True))
         assert unicorn.confluence_score > base.confluence_score
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_score_clamped_to_one(self, agg_xau):
         inputs = _all_bullish_inputs(unicorn_setup=True, ote_ob_confluence=True, kill_zone_active=True)
         result = agg_xau.aggregate(inputs)
         assert result.confluence_score <= 1.0
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_ranging_regime_raises_threshold(self, agg_xau):
         """In RANGING regime, weak signals should not pass threshold."""
         inputs = _neutral_inputs(
@@ -225,19 +218,16 @@ class TestFullAggregation:
         result = agg_xau.aggregate(inputs)
         assert not result.passes_threshold
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_very_strong_classification(self, agg_xau):
         inputs = _all_bullish_inputs(kill_zone_active=True)
         result = agg_xau.aggregate(inputs)
         assert result.strength == SignalStrength.VERY_STRONG
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_module_scores_list_has_nine_entries(self, agg_xau):
         inputs = _all_bullish_inputs()
         result = agg_xau.aggregate(inputs)
         assert len(result.module_scores) == 9
 
-    @pytest.mark.skip(reason="Implement in Sprint 5")
     def test_aligned_modules_count_bullish(self, agg_xau):
         """All modules bullish → all should be marked aligned for BUY direction."""
         inputs = _all_bullish_inputs()

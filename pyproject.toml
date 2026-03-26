@@ -28,6 +28,8 @@ dependencies = [
     "pyyaml>=6.0.1",
     "rich>=13.7.0",         # Console reporting
     "loguru>=0.7.2",
+    "python-telegram-bot>=20.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]

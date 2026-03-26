@@ -84,15 +84,49 @@ class SupportResistanceModule:
             swing_highs: List of SwingPoint from MarketStructureModule.
             swing_lows: List of SwingPoint from MarketStructureModule.
             atr: ATR(14) series for tolerance calculations.
-
-        Sprint 5 implementation notes:
-        - Cluster swing points within 0.5x ATR of each other → strong S/R
-        - 3+ touches in cluster = strong level (strength >= 3)
-        - Detect equal highs: consecutive swing highs within tolerance = liquidity pool
-        - Update status: BROKEN when price closes through level
-        - Flip support→resistance or vice versa on confirmed break
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        if len(atr) == 0 or atr.dropna().empty:
+            return
+
+        self._last_atr = float(atr.dropna().iloc[-1])
+        cluster_tolerance = 0.5 * self._last_atr
+        current_close = float(candles["close"].iloc[-1]) if not candles.empty else 0.0
+        current_ts = candles.index[-1] if not candles.empty else None
+        if hasattr(current_ts, "to_pydatetime"):
+            current_ts = current_ts.to_pydatetime()
+
+        # Build resistance levels from swing high clusters
+        resistance_levels = self._cluster_swing_points(swing_highs, cluster_tolerance, SRKind.RESISTANCE)
+        # Build support levels from swing low clusters
+        support_levels = self._cluster_swing_points(swing_lows, cluster_tolerance, SRKind.SUPPORT)
+
+        # Detect equal highs / lows (liquidity pools)
+        eq_highs = self._detect_equal_highs(swing_highs)
+        eq_lows = self._detect_equal_lows(swing_lows)
+
+        # Merge all levels — keep existing levels and update; add new ones
+        new_levels = resistance_levels + support_levels + eq_highs + eq_lows
+        self.levels = new_levels
+
+        # Update statuses based on current close
+        if current_ts is not None:
+            for level in self.levels:
+                if level.status == SRStatus.BROKEN:
+                    continue
+                if level.kind == SRKind.RESISTANCE:
+                    if current_close > level.price:
+                        level.status = SRStatus.BROKEN
+                        level.last_tested = current_ts
+                    elif abs(current_close - level.price) <= cluster_tolerance:
+                        level.status = SRStatus.TESTED
+                        level.last_tested = current_ts
+                elif level.kind == SRKind.SUPPORT:
+                    if current_close < level.price:
+                        level.status = SRStatus.BROKEN
+                        level.last_tested = current_ts
+                    elif abs(current_close - level.price) <= cluster_tolerance:
+                        level.status = SRStatus.TESTED
+                        level.last_tested = current_ts
 
     def score(self, current_price: float, is_bullish_trend: bool) -> float:
         """
@@ -105,7 +139,49 @@ class SupportResistanceModule:
         Returns:
             float in [-1.0, +1.0]
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        if not self.levels:
+            return 0.0
+
+        tolerance = 0.5 * self._last_atr
+
+        if is_bullish_trend:
+            # Looking for buy setups: price bouncing at support
+            support = self.nearest_support(current_price)
+            if support and self._is_near_level(current_price, support):
+                if support.strength >= 3:
+                    return 0.7   # Strong support bounce
+                return 0.5       # Weaker support or price breaking through
+
+            # Price near equal lows (liquidity grab — risky but can signal reversal)
+            eq_lows = [l for l in self.levels if l.kind == SRKind.LIQUIDITY_POOL_LOW
+                       and self._is_near_level(current_price, l)]
+            if eq_lows:
+                return 0.4   # Potential liquidity grab (risky)
+
+            # Price broke through resistance (momentum confirmation)
+            resistance = self.nearest_resistance(current_price + tolerance)
+            if resistance and resistance.status == SRStatus.BROKEN:
+                return 0.5
+        else:
+            # Bearish: price bouncing at resistance
+            resistance = self.nearest_resistance(current_price)
+            if resistance and self._is_near_level(current_price, resistance):
+                if resistance.strength >= 3:
+                    return -0.7
+                return -0.5
+
+            # Price near equal highs (liquidity grab)
+            eq_highs = [l for l in self.levels if l.kind == SRKind.LIQUIDITY_POOL_HIGH
+                        and self._is_near_level(current_price, l)]
+            if eq_highs:
+                return -0.4
+
+            # Price broke through support (bearish momentum)
+            support = self.nearest_support(current_price - tolerance)
+            if support and support.status == SRStatus.BROKEN:
+                return -0.5
+
+        return 0.0
 
     def nearest_support(self, price: float) -> Optional[SRLevel]:
         """Return the nearest intact support level below current price."""
@@ -128,9 +204,90 @@ class SupportResistanceModule:
     def _detect_equal_highs(self, swing_highs: list) -> list[SRLevel]:
         """
         Find consecutive swing highs within tolerance = liquidity pool above.
-
-        Sprint 5 implementation:
-        - XAUUSD: tolerance = EQUAL_HIGHS_TOLERANCE_XAUUSD_PCT * price
-        - GBPJPY: tolerance = EQUAL_HIGHS_TOLERANCE_GBPJPY_PIPS * pip_value
+        XAUUSD: tolerance = 0.03% of price. GBPJPY: 5 pips (0.05).
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        pools: list[SRLevel] = []
+        if len(swing_highs) < 2:
+            return pools
+
+        for i in range(len(swing_highs) - 1):
+            p1 = swing_highs[i].price
+            p2 = swing_highs[i + 1].price
+            if self.pair == "XAUUSD":
+                tol = p1 * EQUAL_HIGHS_TOLERANCE_XAUUSD_PCT
+            else:
+                tol = EQUAL_HIGHS_TOLERANCE_GBPJPY_PIPS * 0.01
+
+            if abs(p1 - p2) <= tol:
+                avg_price = (p1 + p2) / 2.0
+                ts = swing_highs[i].timestamp
+                pools.append(SRLevel(
+                    price=avg_price,
+                    kind=SRKind.LIQUIDITY_POOL_HIGH,
+                    status=SRStatus.INTACT,
+                    strength=2,
+                    first_seen=ts,
+                    tolerance_atr=0.5,
+                ))
+        return pools
+
+    def _detect_equal_lows(self, swing_lows: list) -> list[SRLevel]:
+        """Find consecutive swing lows within tolerance = liquidity pool below."""
+        pools: list[SRLevel] = []
+        if len(swing_lows) < 2:
+            return pools
+
+        for i in range(len(swing_lows) - 1):
+            p1 = swing_lows[i].price
+            p2 = swing_lows[i + 1].price
+            if self.pair == "XAUUSD":
+                tol = p1 * EQUAL_HIGHS_TOLERANCE_XAUUSD_PCT
+            else:
+                tol = EQUAL_HIGHS_TOLERANCE_GBPJPY_PIPS * 0.01
+
+            if abs(p1 - p2) <= tol:
+                avg_price = (p1 + p2) / 2.0
+                ts = swing_lows[i].timestamp
+                pools.append(SRLevel(
+                    price=avg_price,
+                    kind=SRKind.LIQUIDITY_POOL_LOW,
+                    status=SRStatus.INTACT,
+                    strength=2,
+                    first_seen=ts,
+                    tolerance_atr=0.5,
+                ))
+        return pools
+
+    def _cluster_swing_points(
+        self, swing_points: list, tolerance: float, kind: SRKind
+    ) -> list[SRLevel]:
+        """
+        Group swing points within tolerance of each other into cluster levels.
+        Returns one SRLevel per cluster with strength = number of points in cluster.
+        """
+        if not swing_points:
+            return []
+
+        levels: list[SRLevel] = []
+        used = [False] * len(swing_points)
+
+        for i, sp in enumerate(swing_points):
+            if used[i]:
+                continue
+            cluster = [sp]
+            used[i] = True
+            for j in range(i + 1, len(swing_points)):
+                if not used[j] and abs(swing_points[j].price - sp.price) <= tolerance:
+                    cluster.append(swing_points[j])
+                    used[j] = True
+
+            avg_price = sum(p.price for p in cluster) / len(cluster)
+            levels.append(SRLevel(
+                price=avg_price,
+                kind=kind,
+                status=SRStatus.INTACT,
+                strength=len(cluster),
+                first_seen=cluster[0].timestamp,
+                tolerance_atr=0.5,
+            ))
+        return levels

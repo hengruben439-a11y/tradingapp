@@ -253,7 +253,53 @@ The user manually selects their preferred trading style. Each style adjusts sign
 
 Step 1 - HTF Bias: Determine overall market direction from two higher timeframes using market structure (CHoCH/BOS) and EMA 200 position. Step 2 - Entry TF Setup: Look for confluence of ICT + classical TA on entry timeframe in HTF direction. Step 3 - Entry Trigger: Price must enter a zone of interest (OB, FVG, OTE) and show a reaction before generating signal.
 
-#### 8.3 Timeframe-Specific Parameters
+#### 8.3 UI Complexity Modes
+
+The app has three UI modes, selectable in Settings. Default on first launch: **Simple**. Mode persists per user account and can be changed at any time. Mode is separate from subscription tier — it controls information density, not feature access.
+
+| Mode | Target User | Subscription Gate |
+|------|------------|-----------------|
+| Simple | Beginners — first 6-18 months of trading | All tiers |
+| Pro | Intermediate — understands TA, wants full context | Premium + Pro |
+| Max | Expert — needs raw data, custom controls, advanced analytics | Pro only |
+
+**Simple Mode:**
+- Shows top 1-2 highest-confidence signals per day only (Beginner Focus)
+- Signal card: pair flag, direction (BUY / SELL in large text), entry price, TP1, SL — nothing else
+- Confidence displayed as plain-English label only: "Very Strong", "Strong", "Moderate"
+- All contextual tooltips visible by default (no need to long-press — always shown inline)
+- Risk calculator simplified: one risk % slider, shows only dollar risk and lot size
+- No module breakdown, no regime badge, no dissent section
+- Economic calendar shows only High-impact events (filters Medium/Low)
+- Journal shows P&L, direction, pair — no module attribution
+- Onboarding quiz on first launch to confirm beginner profile
+- After 7 days, if user consistently taps "View Analysis" on signal cards → suggest upgrading to Pro mode
+
+**Pro Mode:**
+- All active signals across selected timeframes and pairs
+- Signal card: full entry + TP1/TP2/TP3 + SL with R:R displayed
+- Module dissent bars: horizontal bar chart, color-coded (green=aligned, red=opposing, amber=neutral)
+- Confluence score as percentage with animated confidence ring
+- Regime badge: TRENDING / RANGING / TRANSITIONAL
+- News risk badge when within 15 min of high-impact event
+- Conflict warning: HTF vs LTF disagreement badge with template-based explanation
+- Full risk calculator: balance input, risk % slider, live lot size, margin estimate, pip value display
+- Economic calendar: all impact levels, historical reaction data shown on event expand
+- Journal: full P&L with module contribution and post-mortem on SL hit
+
+**Max Mode (Pro subscribers only):**
+- Everything in Pro, plus:
+- Raw module scores visible on signal detail (e.g., "Market Structure: +0.85 | OB/FVG: +0.70 | RSI: -0.40")
+- Signal decay timer: live countdown showing elapsed/expiry and real-time decayed score
+- HTF conflict side-by-side: both timeframe signals displayed in a split card with crossover annotations
+- Advanced journal analytics: Sharpe ratio, Sortino ratio, Calmar ratio, rolling win rate chart
+- In-app backtest report access: view historical 5-year backtest equity curve, MDD chart, monthly heatmap
+- Signal filtering panel: filter active signals by Kill Zone, pair, setup type (OB/FVG/OTE/BOS/CHoCH)
+- CSV export: journal history, signal log, and performance metrics
+- Parameter visibility: expandable section on signal card showing which ATR period, FVG min size, and swing N were used for that signal's timeframe
+- Custom risk parameters: extend risk % range to 0.1–5% in 0.1% steps; set per-pair daily loss limits
+
+#### 8.4 Timeframe-Specific Parameters
 
 | Parameter | 1m/5m | 15m/30m | 1H/4H | 1D | 1W |
 |-----------|-------|---------|-------|-----|-----|
@@ -1032,7 +1078,7 @@ With a proven AND live-validated signal engine, Phase 2 wraps it in the made. us
 - Signal Detail view: indicator contribution bars with color-coded module dissent (green=aligned, red=opposing, amber=neutral), mini chart, contextual tooltips
 - Economic Calendar: timeline with glass event cards, countdown rings, impact color coding
 - TradingEconomics API integration for calendar data with SGT timezone default
-- **Beginner Focus Mode:** Option to show only top 1-2 signals per day with the highest confluence scores. Gradually unlocks more signals as user demonstrates consistent risk management via journal.
+- **UI Complexity Modes (§8.3):** Implement Simple / Pro / Max mode selector in Settings. Default to Simple on first launch with onboarding quiz. Simple = top 1-2 signals, plain-English labels, no module breakdown. Pro = full signal detail with dissent bars and regime badge. Max = raw scores, decay timer, advanced analytics, CSV export. Gate Pro/Max behind Premium/Pro subscriptions respectively.
 
 #### Sprint 10 (Weeks 23-24): iOS App - Risk, Journal & Paper Trading
 

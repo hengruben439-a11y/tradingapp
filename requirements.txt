@@ -42,3 +42,24 @@ rich>=13.7.0
 
 # Logging
 loguru>=0.7.2
+
+# Telegram bot
+python-telegram-bot>=20.0
+apscheduler>=3.10.0
+
+# API & broker integration
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+httpx[http2]>=0.26.0
+python-jose[cryptography]>=3.3.0
+PyJWT>=2.8.0
+python-multipart>=0.0.9
+supabase>=2.3.0
+dateparser>=1.2.0
+python-dateutil>=2.8.2
+
+# Notifications
+# (APNS uses httpx, no extra dep needed)
+
+# Data acquisition
+tqdm>=4.66.0

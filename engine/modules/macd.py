@@ -85,16 +85,71 @@ class MACDModule:
         Args:
             candles: OHLCV DataFrame sorted ascending.
                      Minimum length: slow + signal + divergence_lookback bars.
-
-        Sprint 4 implementation notes:
-        - MACD Line = EMA(fast) - EMA(slow)
-        - Signal Line = EMA(signal_period) of MACD Line
-        - Histogram = MACD Line - Signal Line
-        - Crossover: MACD was below Signal last bar, now above = bullish cross
-        - Near zero: |MACD Line| < NEAR_ZERO_THRESHOLD_ATR_PCT * current_atr
-        - Histogram divergence: price makes new high but histogram peak is lower
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if len(candles) < self.slow + self.signal_period:
+            return
+
+        closes = candles["close"]
+        ema_fast = closes.ewm(span=self.fast, adjust=False).mean()
+        ema_slow = closes.ewm(span=self.slow, adjust=False).mean()
+
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=self.signal_period, adjust=False).mean()
+        histogram = macd_line - signal_line
+
+        self._macd_line = macd_line
+        self._signal_line = signal_line
+        self._histogram = histogram
+
+        curr_macd = float(macd_line.iloc[-1])
+        curr_sig = float(signal_line.iloc[-1])
+        curr_hist = float(histogram.iloc[-1])
+
+        # Determine ATR approximation for near-zero threshold
+        bar_range = candles["high"] - candles["low"]
+        atr_approx = float(bar_range.rolling(14).mean().iloc[-1]) if len(candles) >= 14 else float(bar_range.mean())
+        if pd.isna(atr_approx) or atr_approx <= 0:
+            atr_approx = abs(curr_macd) + 1.0
+        near_zero_threshold = NEAR_ZERO_THRESHOLD_ATR_PCT * atr_approx
+
+        # Detect crossover
+        signal_kind = MACDSignalKind.NEUTRAL
+        if len(macd_line) >= 2:
+            prev_macd = float(macd_line.iloc[-2])
+            prev_sig = float(signal_line.iloc[-2])
+            prev_hist = float(histogram.iloc[-2])
+
+            bullish_cross = prev_macd <= prev_sig and curr_macd > curr_sig
+            bearish_cross = prev_macd >= prev_sig and curr_macd < curr_sig
+
+            if bullish_cross:
+                signal_kind = (
+                    MACDSignalKind.BULLISH_CROSSOVER_NEAR_ZERO
+                    if abs(curr_macd) < near_zero_threshold
+                    else MACDSignalKind.BULLISH_CROSSOVER_FAR_ZERO
+                )
+            elif bearish_cross:
+                signal_kind = (
+                    MACDSignalKind.BEARISH_CROSSOVER_NEAR_ZERO
+                    if abs(curr_macd) < near_zero_threshold
+                    else MACDSignalKind.BEARISH_CROSSOVER_FAR_ZERO
+                )
+            elif curr_hist > 0 and curr_hist > prev_hist:
+                signal_kind = MACDSignalKind.HISTOGRAM_RISING
+            elif curr_hist < 0 and curr_hist < prev_hist:
+                signal_kind = MACDSignalKind.HISTOGRAM_FALLING
+            else:
+                # Check for histogram divergence
+                div = self._detect_histogram_divergence(candles, histogram)
+                if div is not None:
+                    signal_kind = div
+
+        self._state = MACDState(
+            macd_line=curr_macd,
+            signal_line=curr_sig,
+            histogram=curr_hist,
+            latest_signal=signal_kind,
+        )
 
     def score(self) -> float:
         """
@@ -103,7 +158,27 @@ class MACDModule:
         Returns:
             float in [-1.0, +1.0]
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if self._state is None:
+            return 0.0
+
+        kind = self._state.latest_signal
+        hist = self._state.histogram
+
+        score_map = {
+            MACDSignalKind.BULLISH_CROSSOVER_NEAR_ZERO: 0.8,
+            MACDSignalKind.BULLISH_CROSSOVER_FAR_ZERO: 0.4,
+            MACDSignalKind.BEARISH_CROSSOVER_NEAR_ZERO: -0.8,
+            MACDSignalKind.BEARISH_CROSSOVER_FAR_ZERO: -0.4,
+            # Bearish divergence: price HH but histogram LH → momentum weakening → -0.6
+            MACDSignalKind.HISTOGRAM_BEARISH_DIVERGENCE: -0.6,
+            # Bullish divergence: price LL but histogram HL → momentum turning → +0.6
+            MACDSignalKind.HISTOGRAM_BULLISH_DIVERGENCE: 0.6,
+            MACDSignalKind.HISTOGRAM_RISING: 0.3,
+            MACDSignalKind.HISTOGRAM_FALLING: -0.3,
+            MACDSignalKind.NEUTRAL: 0.0,
+        }
+
+        return score_map.get(kind, 0.0)
 
     @property
     def current_state(self) -> Optional[MACDState]:
@@ -133,6 +208,40 @@ class MACDModule:
         Detect MACD histogram divergence by comparing price extremes
         vs histogram extremes over the last `lookback` bars.
 
-        Sprint 4 implementation.
+        Bearish divergence: price makes higher high but histogram makes lower high → -0.6
+        Bullish divergence: price makes lower low but histogram makes higher low → +0.6
         """
-        raise NotImplementedError("Implement in Sprint 4")
+        if len(candles) < lookback + 2:
+            return None
+
+        recent_closes = candles["close"].iloc[-lookback:]
+        recent_hist = histogram.iloc[-lookback:]
+
+        if len(recent_closes) < 4:
+            return None
+
+        # Find local highs in price (for bearish divergence)
+        price_highs = []
+        hist_at_highs = []
+        for i in range(1, len(recent_closes) - 1):
+            if recent_closes.iloc[i] > recent_closes.iloc[i - 1] and recent_closes.iloc[i] > recent_closes.iloc[i + 1]:
+                price_highs.append(float(recent_closes.iloc[i]))
+                hist_at_highs.append(float(recent_hist.iloc[i]))
+
+        if len(price_highs) >= 2:
+            if price_highs[-1] > price_highs[-2] and hist_at_highs[-1] < hist_at_highs[-2]:
+                return MACDSignalKind.HISTOGRAM_BEARISH_DIVERGENCE
+
+        # Find local lows in price (for bullish divergence)
+        price_lows = []
+        hist_at_lows = []
+        for i in range(1, len(recent_closes) - 1):
+            if recent_closes.iloc[i] < recent_closes.iloc[i - 1] and recent_closes.iloc[i] < recent_closes.iloc[i + 1]:
+                price_lows.append(float(recent_closes.iloc[i]))
+                hist_at_lows.append(float(recent_hist.iloc[i]))
+
+        if len(price_lows) >= 2:
+            if price_lows[-1] < price_lows[-2] and hist_at_lows[-1] > hist_at_lows[-2]:
+                return MACDSignalKind.HISTOGRAM_BULLISH_DIVERGENCE
+
+        return None

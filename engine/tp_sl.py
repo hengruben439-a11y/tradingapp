@@ -108,17 +108,105 @@ class TPSLEngine:
         Calculate entry, SL, and three TP levels.
 
         Returns None if TP1 cannot achieve minimum 1:1 R:R (signal is suppressed).
-
-        Sprint 5 implementation notes:
-        - Determine SL using structural and ATR methods; pick tighter; add buffer
-        - Calculate risk distance (entry to SL) as the basis for R:R
-        - Find TP1 as nearest S/R or 1.0x risk — whichever is closer
-        - Find TP2 as next S/R or opposing OB or 2.0x risk
-        - Find TP3 as major liquidity / Fib extension / 3.0x risk
-        - Fall back to pure ATR multiples if no structural targets found
-        - Check TP1 >= MIN_TP1_RR × risk; return None if not
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        # Step 1: Calculate SL
+        sl_raw, used_structural, sl_excessive = self._calculate_sl(
+            entry_price, direction, atr, swing_invalidation
+        )
+        sl_price = self._add_sl_buffer(sl_raw, direction, entry_price)
+
+        # Step 2: Risk distance
+        risk_distance = abs(entry_price - sl_price)
+        if risk_distance <= 0:
+            return None
+
+        # Determine TP target levels (above entry for BUY, below for SELL)
+        if direction == Direction.BUY:
+            tp_levels_src = resistance_levels
+            tp_sign = 1.0
+        else:
+            tp_levels_src = support_levels
+            tp_sign = -1.0
+
+        # Filter: TP targets must be in the correct direction from entry
+        if direction == Direction.BUY:
+            valid_structural = sorted([l for l in tp_levels_src if l > entry_price])
+        else:
+            valid_structural = sorted([l for l in tp_levels_src if l < entry_price], reverse=True)
+
+        used_fallback = len(valid_structural) == 0
+
+        # TP1: nearest S/R or 1.0x risk
+        tp1_atr = entry_price + tp_sign * TP1_ATR_FALLBACK * atr
+        if valid_structural:
+            tp1_struct = valid_structural[0]
+            # Take whichever is closer to entry (more conservative)
+            if abs(tp1_struct - entry_price) < abs(tp1_atr - entry_price):
+                tp1_price = tp1_struct
+                tp1_source = "structural"
+            else:
+                tp1_price = entry_price + tp_sign * 1.0 * risk_distance
+                tp1_source = "atr_fallback"
+        else:
+            tp1_price = tp1_atr
+            tp1_source = "atr_fallback"
+
+        # TP1 must achieve at least 1:1 R:R
+        tp1_rr = abs(tp1_price - entry_price) / risk_distance
+        if tp1_rr < MIN_TP1_RR:
+            return None
+
+        # TP2: next S/R or 2.0x risk
+        tp2_atr = entry_price + tp_sign * TP2_ATR_FALLBACK * atr
+        if len(valid_structural) >= 2:
+            tp2_struct = valid_structural[1]
+            tp2_price = tp2_struct
+            tp2_source = "structural"
+        elif len(valid_structural) == 1 and abs(valid_structural[0] - entry_price) < abs(tp2_atr - entry_price):
+            tp2_price = entry_price + tp_sign * 2.0 * risk_distance
+            tp2_source = "atr_fallback"
+        else:
+            tp2_price = tp2_atr
+            tp2_source = "atr_fallback"
+
+        # TP3: Fib extension or major liquidity or 3.0x risk
+        tp3_atr = entry_price + tp_sign * TP3_ATR_FALLBACK * atr
+        fib_key = "tp_ext_0.618"
+        if fib_key in fib_extensions:
+            fib_val = fib_extensions[fib_key]
+            if (direction == Direction.BUY and fib_val > entry_price) or \
+               (direction == Direction.SELL and fib_val < entry_price):
+                tp3_price = fib_val
+                tp3_source = "fibonacci_extension"
+            else:
+                tp3_price = tp3_atr
+                tp3_source = "atr_fallback"
+        elif len(valid_structural) >= 3:
+            tp3_price = valid_structural[2]
+            tp3_source = "structural"
+        else:
+            tp3_price = tp3_atr
+            tp3_source = "atr_fallback"
+
+        # Build result
+        sl_pips = self._price_to_pips(risk_distance)
+        sl_atr_multiple = risk_distance / atr if atr > 0 else 0.0
+
+        return TPSLResult(
+            entry_price=entry_price,
+            stop_loss=sl_price,
+            tp1=TPLevel(level=1, price=tp1_price, rr_ratio=round(abs(tp1_price - entry_price) / risk_distance, 2),
+                        close_pct=TP1_CLOSE_PCT, source=tp1_source),
+            tp2=TPLevel(level=2, price=tp2_price, rr_ratio=round(abs(tp2_price - entry_price) / risk_distance, 2),
+                        close_pct=TP2_CLOSE_PCT, source=tp2_source),
+            tp3=TPLevel(level=3, price=tp3_price, rr_ratio=round(abs(tp3_price - entry_price) / risk_distance, 2),
+                        close_pct=TP3_CLOSE_PCT, source=tp3_source),
+            sl_distance_pips=round(sl_pips, 1),
+            sl_distance_atr_multiple=round(sl_atr_multiple, 2),
+            used_structural_sl=used_structural,
+            sl_is_excessive=sl_excessive,
+            used_fallback_tp=used_fallback,
+        )
 
     def calculate_lot_size(
         self,
@@ -153,10 +241,43 @@ class TPSLEngine:
 
         Returns:
             (sl_price, used_structural, is_excessive)
-
-        Sprint 5 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        atr_sl_distance = SL_DEFAULT_ATR_MULTIPLE * atr
+
+        if direction == Direction.BUY:
+            atr_sl = entry_price - atr_sl_distance
+        else:
+            atr_sl = entry_price + atr_sl_distance
+
+        structural_sl = None
+        if swing_invalidation is not None:
+            structural_sl = swing_invalidation
+
+        if structural_sl is not None:
+            # Use whichever is tighter (closer to entry)
+            struct_dist = abs(entry_price - structural_sl)
+            if struct_dist < atr_sl_distance:
+                sl_price = structural_sl
+                used_structural = True
+            else:
+                sl_price = atr_sl
+                used_structural = False
+        else:
+            sl_price = atr_sl
+            used_structural = False
+
+        # Enforce bounds: [1x ATR, 3x ATR] from entry
+        actual_dist = abs(entry_price - sl_price)
+        min_dist = SL_MIN_ATR_MULTIPLE * atr
+        max_dist = SL_MAX_ATR_MULTIPLE * atr
+
+        if actual_dist < min_dist:
+            sl_price = entry_price - min_dist if direction == Direction.BUY else entry_price + min_dist
+        elif actual_dist > max_dist:
+            sl_price = entry_price - max_dist if direction == Direction.BUY else entry_price + max_dist
+
+        is_excessive = abs(entry_price - sl_price) > SL_DOWNGRADE_ATR_THRESHOLD * atr
+        return sl_price, used_structural, is_excessive
 
     def _add_sl_buffer(self, sl_price: float, direction: Direction, entry_price: float) -> float:
         """
@@ -186,9 +307,18 @@ class TPSLEngine:
         Find the nearest S/R level in the direction of the trade
         at a target R:R distance. Falls back to ATR multiple if no level found.
 
-        Sprint 5 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        if not levels:
+            return None
+
+        target_distance = beyond_rr * risk_distance
+
+        if direction == Direction.BUY:
+            candidates = sorted([l for l in levels if l > price + target_distance * 0.5])
+        else:
+            candidates = sorted([l for l in levels if l < price - target_distance * 0.5], reverse=True)
+
+        return candidates[0] if candidates else None
 
     def _price_to_pips(self, distance: float) -> float:
         """Convert price distance to pips for the configured pair."""

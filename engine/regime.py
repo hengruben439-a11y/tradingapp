@@ -63,19 +63,68 @@ class RegimeDetector:
         Args:
             candles: OHLCV DataFrame sorted ascending.
                      Minimum length: 2 * ADX_PERIOD + 1 bars.
-
-        Sprint 5 implementation notes:
-        - +DM = High - prev_High if positive, else 0
-        - -DM = prev_Low - Low if positive, else 0
-        - TR = max(High-Low, |High-prev_Close|, |Low-prev_Close|)
-        - ATR_14 = Wilder smoothed TR
-        - +DI = 100 * Wilder_smooth(+DM) / ATR_14
-        - -DI = 100 * Wilder_smooth(-DM) / ATR_14
-        - DX = 100 * |+DI - -DI| / (+DI + -DI)
-        - ADX = Wilder_smooth(DX, 14)
-        - BB width secondary: current BB width vs 50-bar BB width MA
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        min_bars = 2 * ADX_PERIOD + 1
+        if len(candles) < min_bars:
+            return
+
+        high = candles["high"]
+        low = candles["low"]
+        close = candles["close"]
+
+        # True Range
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        # Directional Movement
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+
+        plus_dm = pd.Series(0.0, index=candles.index)
+        minus_dm = pd.Series(0.0, index=candles.index)
+        plus_dm[(up_move > down_move) & (up_move > 0)] = up_move[(up_move > down_move) & (up_move > 0)]
+        minus_dm[(down_move > up_move) & (down_move > 0)] = down_move[(down_move > up_move) & (down_move > 0)]
+
+        # Wilder smoothing: com = period - 1
+        com = ADX_PERIOD - 1
+        atr_wilder = tr.ewm(com=com, adjust=False).mean()
+        plus_dm_smooth = plus_dm.ewm(com=com, adjust=False).mean()
+        minus_dm_smooth = minus_dm.ewm(com=com, adjust=False).mean()
+
+        # Directional Indicators
+        plus_di = 100.0 * plus_dm_smooth / atr_wilder.replace(0, float("nan"))
+        minus_di = 100.0 * minus_dm_smooth / atr_wilder.replace(0, float("nan"))
+
+        # DX and ADX
+        di_sum = plus_di + minus_di
+        dx = 100.0 * (plus_di - minus_di).abs() / di_sum.replace(0, float("nan"))
+        adx = dx.ewm(com=com, adjust=False).mean()
+
+        self._last_adx = float(adx.iloc[-1]) if not adx.empty and not pd.isna(adx.iloc[-1]) else 0.0
+        adx_regime = self._classify_from_adx(self._last_adx)
+
+        # BB width secondary confirmation
+        bb_squeeze = False
+        if len(candles) >= 70:  # Need 20 bars for BB + 50 bars for MA
+            bb_period = 20
+            sma = close.rolling(bb_period).mean()
+            std = close.rolling(bb_period).std()
+            upper = sma + 2.0 * std
+            lower = sma - 2.0 * std
+            width = (upper - lower) / sma.replace(0, float("nan"))
+            width_ma50 = width.rolling(50).mean()
+            if not width.empty and not width_ma50.empty:
+                curr_w = width.iloc[-1]
+                avg_w = width_ma50.iloc[-1]
+                if not pd.isna(curr_w) and not pd.isna(avg_w) and avg_w > 0:
+                    bb_squeeze = curr_w < avg_w * 0.8   # Width well below average = squeeze
+                    self._bb_confirming = not bb_squeeze  # expansion = trending confirmation
+
+        self._regime = self._combine_with_bb_confirmation(adx_regime, bb_squeeze)
 
     @property
     def regime(self) -> MarketRegime:
@@ -141,7 +190,19 @@ class RegimeDetector:
         """
         Merge ADX regime with BB width secondary signal.
         BB squeeze + ADX near threshold → lean toward RANGING.
-
-        Sprint 5 implementation.
+        BB expansion + ADX near threshold → lean toward TRENDING.
+        ADX clearly above/below thresholds → ADX wins regardless.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        # If ADX is decisive (not in transitional zone), trust it
+        if adx_regime == MarketRegime.TRENDING or adx_regime == MarketRegime.RANGING:
+            # BB can only confirm, not override a decisive ADX reading
+            if adx_regime == MarketRegime.TRENDING and bb_squeeze:
+                return MarketRegime.TRANSITIONAL  # Conflicting signals
+            return adx_regime
+
+        # ADX is TRANSITIONAL (20-25): BB breaks the tie
+        if bb_squeeze:
+            return MarketRegime.RANGING
+        if self._bb_confirming:
+            return MarketRegime.TRENDING
+        return MarketRegime.TRANSITIONAL

@@ -1,0 +1,112 @@
+version: "3.9"
+
+# ── made. — Docker Compose ────────────────────────────────────────────────────
+# Standard stack: redis + api + engine_runner + telegram_bot
+# Shadow mode:    add --profile shadow to start shadow_runner
+#
+# Usage:
+#   docker compose up -d                         # standard stack
+#   docker compose --profile shadow up -d        # standard + shadow runner
+#   docker compose down                          # stop all
+
+services:
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  # Persists engine state checkpoints and caches live signals.
+  # appendonly yes ensures data survives container restarts.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── API ─────────────────────────────────────────────────────────────────────
+  # FastAPI + WebSocket server. iOS app, Telegram bot, and engine connect here.
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./reports:/app/reports
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Engine Runner ────────────────────────────────────────────────────────────
+  # Connects to OANDA / Twelve Data, runs confluence scoring pipeline,
+  # publishes signals to Redis on each bar close.
+  engine_runner:
+    build: .
+    restart: unless-stopped
+    command: python -m live.engine_runner
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./reports:/app/reports
+      - ./data:/app/data
+
+  # ── Telegram Bot ─────────────────────────────────────────────────────────────
+  # Subscribes to Redis signal channel, broadcasts to Telegram.
+  telegram_bot:
+    build: .
+    restart: unless-stopped
+    command: python -m telegram_bot.bot
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Shadow Runner ─────────────────────────────────────────────────────────────
+  # Phase 1.5 validation: runs engine on live data but does NOT push signals to
+  # users. All signals are logged to reports/shadow_log.jsonl for GO/NO-GO
+  # analysis via: python -m live.shadow_monitor
+  #
+  # Only starts when the 'shadow' profile is requested:
+  #   docker compose --profile shadow up -d shadow_runner
+  shadow_runner:
+    build: .
+    restart: unless-stopped
+    command: python -m live.shadow_runner
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SHADOW_MODE: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - shadow
+    volumes:
+      - ./reports:/app/reports
+      - ./data:/app/data
+
+volumes:
+  redis_data:
+    driver: local

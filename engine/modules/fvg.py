@@ -72,34 +72,92 @@ class FVGModule:
         Args:
             candles: OHLCV DataFrame sorted ascending.
             atr: ATR(14) series aligned to candles index.
-
-        Sprint 3 implementation notes:
-        - Scan every 3-candle window: check [i-2].high vs [i].low (bullish)
-          and [i-2].low vs [i].high (bearish)
-        - Filter: gap size >= self.min_size_atr_multiple * ATR
-        - Update fill status: track price penetration into each open FVG
-        - Mark INVERTED if price closes through fully and reversal follows
         """
-        raise NotImplementedError("Implement in Sprint 3")
+        existing_ts = {fvg.timestamp for fvg in self.fvgs}
+        highs = candles["high"].values
+        lows = candles["low"].values
+        new_fvgs: list[FairValueGap] = []
+
+        for i in range(2, len(candles)):
+            # Middle candle (Candle 2) timestamp identifies this FVG
+            ts = candles.index[i - 1]
+            if isinstance(ts, pd.Timestamp):
+                ts = ts.to_pydatetime()
+
+            if ts in existing_ts:
+                continue
+
+            atr_val = float(atr.iloc[i - 1]) if i - 1 < len(atr) else 1.0
+            if atr_val <= 0:
+                hl = float(highs[i - 1]) - float(lows[i - 1])
+                atr_val = hl if hl > 0 else 1.0
+
+            c1_high = float(highs[i - 2])
+            c1_low = float(lows[i - 2])
+            c3_low = float(lows[i])
+            c3_high = float(highs[i])
+
+            # Bullish FVG: gap between Candle 1 high and Candle 3 low
+            if c3_low > c1_high:
+                gap = c3_low - c1_high
+                if gap >= self.min_size_atr_multiple * atr_val:
+                    new_fvgs.append(FairValueGap(
+                        timestamp=ts,
+                        kind=FVGKind.BULLISH,
+                        top=c3_low,
+                        bottom=c1_high,
+                        midpoint=(c3_low + c1_high) / 2.0,
+                        size_atr=gap / atr_val,
+                    ))
+                    existing_ts.add(ts)
+                    continue
+
+            # Bearish FVG: gap between Candle 3 high and Candle 1 low
+            if c3_high < c1_low:
+                gap = c1_low - c3_high
+                if gap >= self.min_size_atr_multiple * atr_val:
+                    new_fvgs.append(FairValueGap(
+                        timestamp=ts,
+                        kind=FVGKind.BEARISH,
+                        top=c1_low,
+                        bottom=c3_high,
+                        midpoint=(c1_low + c3_high) / 2.0,
+                        size_atr=gap / atr_val,
+                    ))
+                    existing_ts.add(ts)
+
+        self.fvgs.extend(new_fvgs)
+        self._update_fill_status(candles)
 
     def score(self, current_price: float) -> float:
         """
         Score based on whether price is at an open or partially-filled FVG.
 
         Returns:
-            +0.7  — price entering bullish FVG (in trend direction)
-            +1.0  — Unicorn: FVG overlaps with an active OB (passed externally)
+            +0.7  — price inside open/partial bullish FVG
+            -0.7  — price inside open/partial bearish FVG
+            -0.3  — price at inverted FVG (resistance)
              0.0  — no relevant FVG
-            -0.3  — price at inverted FVG (potential resistance)
         """
-        raise NotImplementedError("Implement in Sprint 3")
+        for fvg in reversed(self.fvgs):
+            if fvg.status in (FVGStatus.OPEN, FVGStatus.PARTIALLY_FILLED):
+                if fvg.bottom <= current_price <= fvg.top:
+                    return 0.7 if fvg.kind == FVGKind.BULLISH else -0.7
+            elif fvg.status == FVGStatus.INVERTED:
+                if fvg.bottom <= current_price <= fvg.top:
+                    return -0.3
+        return 0.0
 
     def check_unicorn_overlap(self, ob_high: float, ob_low: float) -> bool:
         """
         Check if any open FVG overlaps with the given OB zone.
         Returns True if overlap found — signals ICT Unicorn Setup (1.10x multiplier).
         """
-        raise NotImplementedError("Implement in Sprint 3")
+        for fvg in self.fvgs:
+            if fvg.status in (FVGStatus.OPEN, FVGStatus.PARTIALLY_FILLED):
+                if fvg.bottom <= ob_high and fvg.top >= ob_low:
+                    return True
+        return False
 
     def nearest_fvg(self, current_price: float) -> Optional[FairValueGap]:
         """Return the nearest open/partially-filled FVG to current price."""
@@ -118,11 +176,50 @@ class FVGModule:
     def _update_fill_status(self, candles: pd.DataFrame) -> None:
         """
         For each open FVG, check how much it has been filled by recent price action.
-        Track Consequent Encroachment (CE) at midpoint as a key reaction level.
 
-        Sprint 3 implementation notes:
-        - For bullish FVG: fill when price low dips into [bottom, top] range
-        - fill_pct = (top - lowest_price_in_fvg) / (top - bottom)
-        - FILLED when price closes below bottom (bullish) or above top (bearish)
+        Bullish FVG: fill when price low enters [bottom, top]; FILLED when close < bottom.
+        Bearish FVG: fill when price high enters [bottom, top]; FILLED when close > top.
         """
-        raise NotImplementedError("Implement in Sprint 3")
+        for fvg in self.fvgs:
+            if fvg.status in (FVGStatus.FILLED, FVGStatus.INVERTED):
+                continue
+
+            fvg_ts = pd.Timestamp(fvg.timestamp)
+            # Align timezone
+            if candles.index.tz is not None and fvg_ts.tz is None:
+                fvg_ts = fvg_ts.tz_localize(candles.index.tz)
+            elif candles.index.tz is None and fvg_ts.tz is not None:
+                fvg_ts = fvg_ts.tz_localize(None)
+
+            post = candles[candles.index > fvg_ts]
+            if len(post) == 0:
+                continue
+
+            zone_size = fvg.top - fvg.bottom
+            if zone_size <= 0:
+                continue
+
+            if fvg.kind == FVGKind.BULLISH:
+                # Fill: price descends into gap from above
+                for low, close in zip(post["low"], post["close"]):
+                    low, close = float(low), float(close)
+                    if close < fvg.bottom:
+                        fvg.status = FVGStatus.FILLED
+                        fvg.fill_pct = 1.0
+                        break
+                    elif low < fvg.top:
+                        depth = fvg.top - max(low, fvg.bottom)
+                        fvg.fill_pct = max(fvg.fill_pct, depth / zone_size)
+                        fvg.status = FVGStatus.PARTIALLY_FILLED
+            else:
+                # Fill: price ascends into gap from below
+                for high, close in zip(post["high"], post["close"]):
+                    high, close = float(high), float(close)
+                    if close > fvg.top:
+                        fvg.status = FVGStatus.FILLED
+                        fvg.fill_pct = 1.0
+                        break
+                    elif high > fvg.bottom:
+                        depth = min(high, fvg.top) - fvg.bottom
+                        fvg.fill_pct = max(fvg.fill_pct, depth / zone_size)
+                        fvg.status = FVGStatus.PARTIALLY_FILLED

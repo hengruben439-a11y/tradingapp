@@ -77,14 +77,27 @@ class KillZoneModule:
         """
         Determine which (if any) Kill Zone is active at the given bar timestamp.
         bar_timestamp should be UTC-aware or will be converted to UTC.
-
-        Sprint 5 implementation notes:
-        - Convert bar_timestamp to UTC
-        - Check each KZ; for XAUUSD prefer Shanghai_Open over Asian
-        - Handle overnight spans (if utc_start > utc_end, zone spans midnight)
-        - Set self._active_kz
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        if bar_timestamp.tzinfo is not None:
+            utc_ts = bar_timestamp.astimezone(timezone.utc)
+        else:
+            utc_ts = bar_timestamp.replace(tzinfo=timezone.utc)
+
+        current = utc_ts.time().replace(tzinfo=None)
+        self._current_utc_time = current
+
+        applicable = self._get_applicable_zones()
+        active = [kz for kz in applicable if self._is_time_in_zone(current, kz.utc_start, kz.utc_end)]
+
+        if not active:
+            self._active_kz = None
+            return
+
+        # Highest-score zone wins:
+        # Shanghai_Open (0.6) > Asian (0.3) for XAUUSD overlap
+        # NY (1.0) > London (0.8) for their overlap window
+        # NY (1.0) > London_Close (0.5) for 15:00-16:00 overlap
+        self._active_kz = max(active, key=lambda kz: kz.score)
 
     def score(self, is_bullish_trend: bool) -> float:
         """
@@ -97,7 +110,19 @@ class KillZoneModule:
         Returns:
             float in [-1.0, +1.0]
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        if self._active_kz is None:
+            # Outside all KZs: -0.3 penalty opposing the trend direction
+            return -0.3 if is_bullish_trend else 0.3
+
+        kz = self._active_kz
+        magnitude = kz.score
+
+        if kz.is_counter_trend:
+            # London Close: scores in counter-trend direction (retracement)
+            return -magnitude if is_bullish_trend else magnitude
+        else:
+            # Normal KZ: scores in HTF trend direction
+            return magnitude if is_bullish_trend else -magnitude
 
     @property
     def active_kill_zone(self) -> Optional[KillZone]:

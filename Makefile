@@ -1,4 +1,6 @@
-.PHONY: install install-dev test test-cov lint format typecheck backtest clean
+.PHONY: install install-dev test test-cov lint format typecheck backtest clean \
+        docker-build docker-up docker-down shadow-mode shadow-stats \
+        download-data run-api run-engine run-telegram run-all test-apns
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 install:

@@ -121,17 +121,54 @@ class ConfluenceAggregator:
         self._weights = WEIGHTS.get(pair, WEIGHTS["XAUUSD"])
 
     def aggregate(self, inputs: AggregatorInput) -> AggregatorResult:
-        """
-        Run the full 5-step aggregation pipeline.
+        """Run the full 5-step aggregation pipeline."""
+        # Step 1 — Regime gate
+        regime = inputs.regime
+        ranging = (regime == MarketRegime.RANGING)
 
-        Sprint 5 implementation notes:
-        - Step 1: Get regime; determine effective threshold
-        - Step 2: Cap each score at MODULE_SCORE_CAP (±0.85), compute weighted sum
-        - Step 3: Apply multipliers multiplicatively (stack them)
-        - Step 4: Apply penalties (HTF conflict 0.80x, news 0.90x, transitional see regime.py)
-        - Step 5: Clamp to [-1.0, +1.0]; classify strength; check threshold
-        """
-        raise NotImplementedError("Implement in Sprint 5")
+        # Step 2 — Weighted sum
+        raw_scores = [
+            inputs.market_structure,
+            inputs.order_blocks_fvg,
+            inputs.ote,
+            inputs.ema,
+            inputs.rsi,
+            inputs.macd,
+            inputs.bollinger,
+            inputs.kill_zone,
+            inputs.support_resistance,
+        ]
+        weighted_sum = self._compute_weighted_sum(raw_scores)
+
+        # Step 3 — Multipliers
+        score_after_mult, applied_multipliers = self._apply_multipliers(weighted_sum, inputs)
+
+        # Step 4 — Penalties
+        score_after_penalties = self._apply_penalties(score_after_mult, inputs)
+
+        # Step 5 — Clamp and classify
+        confluence_score = max(-1.0, min(1.0, score_after_penalties))
+        direction = Direction.BUY if confluence_score >= 0 else Direction.SELL
+        strength = self._classify_strength(confluence_score, ranging)
+        module_scores = self._build_module_scores(raw_scores, direction)
+
+        # Check threshold (RANGING raises moderate threshold to 0.70)
+        min_threshold = THRESHOLD_MODERATE_RANGING if ranging else THRESHOLD_MODERATE
+        passes = abs(confluence_score) >= min_threshold
+
+        return AggregatorResult(
+            raw_weighted_sum=weighted_sum,
+            confluence_score=confluence_score,
+            direction=direction,
+            strength=strength,
+            module_scores=module_scores,
+            applied_multipliers=applied_multipliers,
+            regime=regime,
+            passes_threshold=passes,
+            unicorn_setup=inputs.unicorn_setup,
+            ote_ob_confluence=inputs.ote_ob_confluence,
+            ote_fvg_confluence=inputs.ote_fvg_confluence,
+        )
 
     def _cap_score(self, score: float) -> float:
         """Clamp a single module score to [-MODULE_SCORE_CAP, +MODULE_SCORE_CAP]."""
@@ -163,10 +200,30 @@ class ConfluenceAggregator:
 
         Returns:
             (adjusted_score, list of applied multiplier names)
-
-        Sprint 5 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        multiplier = 1.0
+        applied: list[str] = []
+
+        if inputs.unicorn_setup:
+            multiplier *= 1.10
+            applied.append("Unicorn (OB+FVG) 1.10x")
+        if inputs.ote_ob_confluence:
+            multiplier *= 1.08
+            applied.append("OTE+OB 1.08x")
+        if inputs.ote_fvg_confluence:
+            multiplier *= 1.06
+            applied.append("OTE+FVG 1.06x")
+        if inputs.kill_zone_active:
+            multiplier *= 1.05
+            applied.append("Kill Zone active 1.05x")
+        else:
+            multiplier *= 0.95
+            applied.append("Outside KZ 0.95x")
+        if inputs.day_of_week_modifier != 1.0:
+            multiplier *= inputs.day_of_week_modifier
+            applied.append(f"Day-of-week {inputs.day_of_week_modifier:.2f}x")
+
+        return score * multiplier, applied
 
     def _apply_penalties(
         self,
@@ -181,10 +238,18 @@ class ConfluenceAggregator:
             HTF conflict:       0.80x (15–25% reduction; using 20%)
             News proximity:     0.90x
             TRANSITIONAL regime: 0.90x (via regime.py)
-
-        Sprint 5 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        sign = 1.0 if score >= 0 else -1.0
+        magnitude = abs(score)
+
+        if inputs.htf_conflict:
+            magnitude *= 0.80
+        if inputs.news_proximity:
+            magnitude *= 0.90
+        if inputs.regime == MarketRegime.TRANSITIONAL:
+            magnitude *= 0.90
+
+        return sign * magnitude
 
     def _classify_strength(self, score: float, ranging: bool) -> SignalStrength:
         """Map absolute score to SignalStrength enum."""
@@ -207,7 +272,18 @@ class ConfluenceAggregator:
         """
         Build ModuleScore objects for signal.module_scores field.
         aligned = True if module score sign matches signal direction.
-
-        Sprint 5 implementation.
         """
-        raise NotImplementedError("Implement in Sprint 5")
+        result: list[ModuleScore] = []
+        for name, raw, weight in zip(_MODULE_NAMES, raw_scores, self._weights):
+            capped = self._cap_score(raw)
+            weighted = capped * weight
+            aligned = (raw >= 0 and direction == Direction.BUY) or (raw < 0 and direction == Direction.SELL)
+            result.append(ModuleScore(
+                name=name,
+                weight=weight,
+                raw_score=raw,
+                capped_score=capped,
+                weighted_contribution=weighted,
+                aligned=aligned,
+            ))
+        return result
